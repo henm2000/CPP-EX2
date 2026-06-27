@@ -2,6 +2,8 @@
 
 #include <drone_mapper/MapsComparison.h>
 
+#include <cmath>
+#include <exception>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -43,7 +45,42 @@ SimulationRunImpl::SimulationRunImpl(std::unique_ptr<const IMap3D> hidden_map,
 }
 
 types::SimulationResult SimulationRunImpl::run() {
-    return types::SimulationResult{};
+    const types::MissionRunResult mission_result = mission_control_->runMission();
+
+    // Resolution policy: we always map at the GPS/input resolution. A factor < 1
+    // would request finer-than-GPS precision (impossible); a factor > 1 requests
+    // a coarser output we do not honour; exactly 1 is the resolution we used.
+    const double factor = mission_config_.output_mapping_resolution_factor;
+    types::ResolutionRequestStatus resolution_status;
+    if (factor < 1.0) {
+        resolution_status = types::ResolutionRequestStatus::IgnoredTooSmall;
+    } else if (std::abs(factor - 1.0) < 1e-9) {
+        resolution_status = types::ResolutionRequestStatus::Accepted;
+    } else {
+        resolution_status = types::ResolutionRequestStatus::Ignored;
+    }
+
+    // Score = accuracy of the produced map vs the ground-truth hidden map.
+    double score = -1.0;
+    if (mission_result.status != types::MissionRunStatus::Error) {
+        try {
+            const std::vector<IMap3D*> targets{static_cast<IMap3D*>(output_map_.get())};
+            const std::vector<double> scores = MapsComparison::compare(*hidden_map_, targets);
+            score = scores.empty() ? -1.0 : scores.front();
+        } catch (const std::exception&) {
+            score = -1.0;
+        }
+    }
+
+    return types::SimulationResult{
+        simulation_config_,
+        mission_config_,
+        resolution_status,
+        {mission_result},
+        output_map_file_,
+        output_map_->getMapConfig(),
+        score,
+    };
 }
 
 } // namespace drone_mapper

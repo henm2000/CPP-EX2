@@ -10,6 +10,9 @@
 
 namespace drone_mapper {
 
+// Dense occupancy map backed by a TinyNPY array plus an offset-aware MapConfig.
+// World -> index: i = floor((world - offset) / resolution) per axis; cell
+// (0,0,0) sits at world `offset`; flat C-order index = (ix*ny + iy)*nz + iz.
 class Map3DImpl final : public IMutableMap3D {
 public:
     Map3DImpl(std::shared_ptr<NpyArray> map_ptr);
@@ -19,6 +22,7 @@ public:
     [[nodiscard]] types::VoxelOccupancy atVoxel(const Position3D& pos) const override;
     // Changed: exposes boundaries, offset, and resolution as one map-owned configuration.
     [[nodiscard]] types::MapConfig getMapConfig() const override;
+    [[nodiscard]] bool isInBounds(const Position3D& pos) const override;
 
     //Mutable map methods
     void set(const Position3D& pos, types::VoxelOccupancy value) override;
@@ -40,6 +44,11 @@ private:
     [[nodiscard]] static bool hasData(NpyArray& array);
     [[nodiscard]] static bool hasBounds(const types::MappingBounds& bounds);
     [[nodiscard]] static GridGeometry geometryOf(NpyArray& array, const types::MapConfig& config);
+    // True iff `pos` is inside the configured boundaries (when set) or inside
+    // the array footprint otherwise. Shared by atVoxel, set and isInBounds.
+    [[nodiscard]] static bool withinBounds(const Position3D& pos,
+                                           const types::MapConfig& config,
+                                           const GridGeometry& geometry);
     // dtype-aware raw cell access: uint8 is reinterpreted as int8 so a stored
     // 255 reads back as Unmapped.
     [[nodiscard]] static int rawAt(NpyArray& array, std::size_t flat);

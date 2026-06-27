@@ -34,6 +34,28 @@ Map3DImpl::GridGeometry Map3DImpl::geometryOf(NpyArray& array, const types::MapC
     return g;
 }
 
+// World-space bounds: explicit boundaries when configured, otherwise the array
+// footprint [offset, offset + shape * resolution). Half-open ranges.
+bool Map3DImpl::withinBounds(const Position3D& pos,
+                             const types::MapConfig& config,
+                             const GridGeometry& g) {
+    const double x_cm = pos.x.force_numerical_value_in(cm);
+    const double y_cm = pos.y.force_numerical_value_in(cm);
+    const double z_cm = pos.z.force_numerical_value_in(cm);
+
+    if (hasBounds(config.boundaries)) {
+        return x_cm >= config.boundaries.min_x.force_numerical_value_in(cm) &&
+               x_cm < config.boundaries.max_x.force_numerical_value_in(cm) &&
+               y_cm >= config.boundaries.min_y.force_numerical_value_in(cm) &&
+               y_cm < config.boundaries.max_y.force_numerical_value_in(cm) &&
+               z_cm >= config.boundaries.min_height.force_numerical_value_in(cm) &&
+               z_cm < config.boundaries.max_height.force_numerical_value_in(cm);
+    }
+    return x_cm >= g.origin_x_cm && x_cm < g.origin_x_cm + static_cast<double>(g.nx) * g.res_cm &&
+           y_cm >= g.origin_y_cm && y_cm < g.origin_y_cm + static_cast<double>(g.ny) * g.res_cm &&
+           z_cm >= g.origin_z_cm && z_cm < g.origin_z_cm + static_cast<double>(g.nz) * g.res_cm;
+}
+
 // Two accepted dtypes:
 //   uint8 (input fixture convention) : 0 -> Empty,    1 -> Occupied
 //   int8  (saved-output convention)  : -1 -> Unmapped, 0 -> Empty, 1 -> Occupied
@@ -60,6 +82,7 @@ types::VoxelOccupancy Map3DImpl::occupancyFromRaw(int raw) {
         case 0: return types::VoxelOccupancy::Empty;
         case -1: return types::VoxelOccupancy::Unmapped;
         case -2: return types::VoxelOccupancy::OutOfBounds;
+        case -3: return types::VoxelOccupancy::PotentiallyOccupied;
         default: return types::VoxelOccupancy::Empty;
     }
 }
@@ -135,33 +158,16 @@ types::VoxelOccupancy Map3DImpl::atVoxel(const Position3D& pos) const {
     if (g.res_cm <= 0.0 || !hasData(array)) {
         return types::VoxelOccupancy::OutOfBounds;
     }
-
-    const double x_cm = pos.x.force_numerical_value_in(cm);
-    const double y_cm = pos.y.force_numerical_value_in(cm);
-    const double z_cm = pos.z.force_numerical_value_in(cm);
-
-    // World-space bounds: explicit boundaries when configured, otherwise the
-    // array footprint [offset, offset + shape * resolution). Half-open ranges.
-    if (hasBounds(config_.boundaries)) {
-        if (x_cm < config_.boundaries.min_x.force_numerical_value_in(cm) ||
-            x_cm >= config_.boundaries.max_x.force_numerical_value_in(cm) ||
-            y_cm < config_.boundaries.min_y.force_numerical_value_in(cm) ||
-            y_cm >= config_.boundaries.max_y.force_numerical_value_in(cm) ||
-            z_cm < config_.boundaries.min_height.force_numerical_value_in(cm) ||
-            z_cm >= config_.boundaries.max_height.force_numerical_value_in(cm)) {
-            return types::VoxelOccupancy::OutOfBounds;
-        }
-    } else {
-        if (x_cm < g.origin_x_cm || x_cm >= g.origin_x_cm + static_cast<double>(g.nx) * g.res_cm ||
-            y_cm < g.origin_y_cm || y_cm >= g.origin_y_cm + static_cast<double>(g.ny) * g.res_cm ||
-            z_cm < g.origin_z_cm || z_cm >= g.origin_z_cm + static_cast<double>(g.nz) * g.res_cm) {
-            return types::VoxelOccupancy::OutOfBounds;
-        }
+    if (!withinBounds(pos, config_, g)) {
+        return types::VoxelOccupancy::OutOfBounds;
     }
 
-    const auto ix = static_cast<long>(std::floor((x_cm - g.origin_x_cm) / g.res_cm));
-    const auto iy = static_cast<long>(std::floor((y_cm - g.origin_y_cm) / g.res_cm));
-    const auto iz = static_cast<long>(std::floor((z_cm - g.origin_z_cm) / g.res_cm));
+    const auto ix = static_cast<long>(
+        std::floor((pos.x.force_numerical_value_in(cm) - g.origin_x_cm) / g.res_cm));
+    const auto iy = static_cast<long>(
+        std::floor((pos.y.force_numerical_value_in(cm) - g.origin_y_cm) / g.res_cm));
+    const auto iz = static_cast<long>(
+        std::floor((pos.z.force_numerical_value_in(cm) - g.origin_z_cm) / g.res_cm));
     if (ix < 0 || iy < 0 || iz < 0 ||
         static_cast<std::size_t>(ix) >= g.nx ||
         static_cast<std::size_t>(iy) >= g.ny ||
@@ -181,13 +187,22 @@ types::MapConfig Map3DImpl::getMapConfig() const {
     return config_;
 }
 
+bool Map3DImpl::isInBounds(const Position3D& pos) const {
+    NpyArray& array = *map_;
+    const GridGeometry g = geometryOf(array, config_);
+    if (g.res_cm <= 0.0 || !hasData(array)) {
+        return false;
+    }
+    return withinBounds(pos, config_, g);
+}
+
 void Map3DImpl::set(const Position3D& pos, types::VoxelOccupancy value) {
     NpyArray& array = *map_;
     const GridGeometry g = geometryOf(array, config_);
     if (g.res_cm <= 0.0 || !hasData(array)) {
         return;
     }
-    if (atVoxel(pos) == types::VoxelOccupancy::OutOfBounds) {
+    if (!withinBounds(pos, config_, g)) {
         return;
     }
 

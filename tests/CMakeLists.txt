@@ -21,6 +21,7 @@ if(DRONE_MAPPER_TEST_SOURCES)
             GTest::gmock
     )
     target_compile_features(drone_mapper_simulation_test PRIVATE cxx_std_20)
+    target_include_directories(drone_mapper_simulation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     include(GoogleTest)
     gtest_discover_tests(drone_mapper_simulation_test)
 endif()

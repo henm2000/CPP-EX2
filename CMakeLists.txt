@@ -20,6 +20,8 @@ add_library(drone_mapper
     src/SimulationManager.cpp
     src/SimulationRunFactoryImpl.cpp
     src/SimulationRunImpl.cpp
+    src/YamlConfigLoader.cpp
+    src/SimulationReportWriter.cpp
 )
 
 target_compile_features(drone_mapper PUBLIC cxx_std_20)

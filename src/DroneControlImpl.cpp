@@ -1,5 +1,7 @@
 #include <drone_mapper/DroneControlImpl.h>
 
+#include <drone_mapper/ScanResultToVoxels.h>
+
 #include <utility>
 
 namespace drone_mapper {
@@ -19,14 +21,50 @@ DroneControlImpl::DroneControlImpl(types::DroneConfigData drone,
       output_map_(output_map),
       mapping_algorithm_(mapping_algorithm) {}
 
+types::MovementResult DroneControlImpl::applyMovement(const types::MovementCommand& command) {
+    switch (command.type) {
+    case types::MovementCommandType::Rotate:
+        return movement_.rotate(command.rotation, command.angle);
+    case types::MovementCommandType::Advance:
+        return movement_.advance(command.distance);
+    case types::MovementCommandType::Elevate:
+        return movement_.elevate(command.distance);
+    case types::MovementCommandType::Hover:
+        break;
+    }
+    return types::MovementResult{true, {}};
+}
+
 types::DroneStepResult DroneControlImpl::step() {
-    (void)drone_;
-    (void)mission_;
-    (void)lidar_;
-    (void)movement_;
-    (void)output_map_;
-    (void)mapping_algorithm_;
-    return types::DroneStepResult{types::DroneStepStatus::Error, "DroneControlImpl::step is a stub."};
+    const types::DroneState current = state();
+    const types::LidarScanResult* latest = last_scan_ ? &*last_scan_ : nullptr;
+    const types::MappingStepCommand command = mapping_algorithm_.nextStep(current, latest);
+
+    if (command.status == types::AlgorithmStatus::Finished ||
+        command.status == types::AlgorithmStatus::FinishedWithUnmappableVoxels) {
+        return types::DroneStepResult{types::DroneStepStatus::Completed, "mapping finished"};
+    }
+
+    // The contract requires movement to be applied before any scan in the same step.
+    if (command.movement.has_value()) {
+        const types::MovementResult moved = applyMovement(*command.movement);
+        if (!moved) {
+            return types::DroneStepResult{types::DroneStepStatus::Error, moved.message};
+        }
+    }
+
+    if (command.scan_orientation.has_value()) {
+        types::LidarScanResult scan = lidar_.scan(*command.scan_orientation);
+        ScanResultToVoxels::applyToMap(output_map_,
+                                       gps_.position(),
+                                       gps_.heading(),
+                                       scan,
+                                       lidar_.config());
+        last_scan_ = std::move(scan);
+    }
+
+    ++step_index_;
+    return types::DroneStepResult{types::DroneStepStatus::Continue, {}};
 }
 
 types::DroneState DroneControlImpl::state() const {

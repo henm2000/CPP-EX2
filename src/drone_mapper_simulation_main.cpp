@@ -1,46 +1,51 @@
 #include <drone_mapper/SimulationManager.h>
+#include <drone_mapper/SimulationReportWriter.h>
 #include <drone_mapper/SimulationRunFactoryImpl.h>
+#include <drone_mapper/YamlConfigLoader.h>
 
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 
+// ./drone_mapper_simulation [<simulation.yaml>] [<output_path>]
+//   - missing first argument  -> "simulation.yaml" in the current directory
+//   - bare filename / relative -> resolved under the current directory
+//   - absolute path           -> used as-is
+// The program never calls exit(); it always returns from main.
 int main(int argc, char** argv) {
-    const std::filesystem::path composition_file =
-        (argc >= 2) ? std::filesystem::path{argv[1]} : std::filesystem::path{"simulation.yaml"};
-    const std::filesystem::path output_path =
-        (argc >= 3) ? std::filesystem::path{argv[2]} : std::filesystem::current_path();
+    namespace fs = std::filesystem;
 
-    auto run_factory = std::make_unique<drone_mapper::SimulationRunFactoryImpl>();
-    drone_mapper::SimulationManager simulation{std::move(run_factory)};
+    fs::path composition_file = (argc >= 2) ? fs::path{argv[1]} : fs::path{"simulation.yaml"};
+    fs::path output_path = (argc >= 3) ? fs::path{argv[2]} : fs::current_path();
 
-    drone_mapper::types::SimulationCompositionData composition{
-        composition_file,
-        {drone_mapper::types::SimulationConfigData{
-            "data_maps/single_voxel_x2_y4_z2.npy",
-            10.0 * drone_mapper::cm,
-            drone_mapper::Position3D{},
-            drone_mapper::Position3D{},
-            0.0 * drone_mapper::horizontal_angle[drone_mapper::deg],
-        }},
-        {drone_mapper::types::MissionConfigData{1, 10.0 * drone_mapper::cm, 1}},
-        {drone_mapper::types::DroneConfigData{
-            30.0 * drone_mapper::cm,
-            45.0 * drone_mapper::horizontal_angle[drone_mapper::deg],
-            50.0 * drone_mapper::cm,
-            40.0 * drone_mapper::cm,
-        }},
-        {drone_mapper::types::LidarConfigData{
-            20.0 * drone_mapper::cm,
-            120.0 * drone_mapper::cm,
-            2.5 * drone_mapper::cm,
-            5,
-        }},
-    };
-    const drone_mapper::types::SimulationManagerReport report = simulation.run(composition, output_path);
+    std::error_code ec;
+    const fs::path cwd = fs::current_path(ec);
+    if (composition_file.is_relative()) {
+        composition_file = cwd / composition_file;
+    }
+    if (output_path.is_relative()) {
+        output_path = cwd / output_path;
+    }
 
-    std::cout << "Assignment 2 simulator skeleton ran "
-              << report.runs.size()
-              << " run(s).\n";
-    return 0;
+    try {
+        const drone_mapper::types::SimulationCompositionData composition =
+            drone_mapper::YamlConfigLoader::loadComposition(composition_file);
+
+        auto run_factory = std::make_unique<drone_mapper::SimulationRunFactoryImpl>();
+        drone_mapper::SimulationManager simulation{std::move(run_factory)};
+
+        const drone_mapper::types::SimulationManagerReport report =
+            simulation.run(composition, output_path);
+
+        const fs::path report_file = output_path / "simulation_output.yaml";
+        drone_mapper::SimulationReportWriter::write(report, composition.composition_file, report_file);
+
+        std::cout << "Wrote " << report_file.string()
+                  << " (" << report.runs.size() << " run(s)).\n";
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
+    }
 }

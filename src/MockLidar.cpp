@@ -2,14 +2,14 @@
 
 #include <mp-units/systems/si/math.h>
 
+#include <algorithm>
 #include <limits>
 
 namespace drone_mapper {
 
-MockLidar::MockLidar(types::LidarConfigData config, const IMap3D& map, const IGPS& gps)
-    : config_(config), map_(map), gps_(gps) {}
+namespace {
 
-std::size_t MockLidar::beamsOnCircle(std::size_t circle_index) {
+[[nodiscard]] std::size_t beams_on_circle(std::size_t circle_index) {
     std::size_t count = 1;
     for (std::size_t i = 0; i < circle_index; ++i) {
         count *= 4;
@@ -17,12 +17,21 @@ std::size_t MockLidar::beamsOnCircle(std::size_t circle_index) {
     return count;
 }
 
-HorizontalAngle MockLidar::horizontalDelta(PhysicalLength offset, PhysicalLength distance) {
+[[nodiscard]] HorizontalAngle horizontal_delta(PhysicalLength offset, PhysicalLength distance) {
     return HorizontalAngle{si::atan2(offset, distance)};
 }
 
-AltitudeAngle MockLidar::altitudeDelta(PhysicalLength offset, PhysicalLength distance) {
+[[nodiscard]] AltitudeAngle altitude_delta(PhysicalLength offset, PhysicalLength distance) {
     return AltitudeAngle{si::atan2(offset, distance)};
+}
+
+} // namespace
+
+MockLidar::MockLidar(types::LidarConfigData config, const IMap3D& map, const IGPS& gps)
+    : config_(config), map_(map), gps_(gps) {}
+
+types::LidarConfigData MockLidar::config() const{
+    return config_;
 }
 
 types::LidarScanResult MockLidar::scan(Orientation scan_orientation) const {
@@ -41,7 +50,7 @@ types::LidarScanResult MockLidar::scan(Orientation scan_orientation) const {
     results.push_back(types::LidarHit{center_distance, scan_orientation});
 
     for (std::size_t circle = 1; circle < config_.fov_circles; ++circle) {
-        const std::size_t beam_count = beamsOnCircle(circle);
+        const std::size_t beam_count = beams_on_circle(circle);
         const PhysicalLength radius = static_cast<double>(circle) * config_.d;
 
         for (std::size_t i = 0; i < beam_count; ++i) {
@@ -50,8 +59,8 @@ types::LidarScanResult MockLidar::scan(Orientation scan_orientation) const {
             const PhysicalLength altitude_offset = radius * si::sin(theta);
 
             const Orientation offset{
-                horizontalDelta(horizontal_offset, config_.z_min),
-                altitudeDelta(altitude_offset, config_.z_min),
+                horizontal_delta(horizontal_offset, config_.z_min),
+                altitude_delta(altitude_offset, config_.z_min),
             };
             const Orientation relative_beam{
                 scan_orientation.horizontal + offset.horizontal,
@@ -76,13 +85,10 @@ PhysicalLength MockLidar::traceBeam(const Orientation& beam_orientation) const {
     const auto dy = cos_altitude * si::sin(beam_orientation.horizontal);
     const auto dz = si::sin(beam_orientation.altitude);
 
-    // Sub-voxel step derived from the map resolution.
-    const PhysicalLength step = kStepFraction * map_.getMapConfig().resolution;
+    // step based on size of the map's resolution
+    const PhysicalLength step = 0.1 * map_.getMapConfig().resolution;
 
-    // March from one step ahead (not 0): the drone's own origin voxel is never
-    // sampled, so a beam can't spuriously "hit" the cell the drone sits in.
-    // z_min only classifies a hit as too-close; it does not gate where we start.
-    for (PhysicalLength distance = step; distance <= config_.z_max; distance += step) {
+    for (PhysicalLength distance = 0.0 * cm; distance <= config_.z_max; distance += step) {
         // Computing target voxel position
         const double distance_cm = distance.force_numerical_value_in(cm);
         const double dir_x = dx.force_numerical_value_in(mp::one);
