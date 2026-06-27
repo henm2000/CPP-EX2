@@ -6,6 +6,7 @@
 
 #include <drone_mapper/Types.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -13,15 +14,20 @@
 
 namespace drone_mapper::test_support {
 
-// Builds a dense int8 occupancy array (0 = Empty, 1 = Occupied) of the given
-// shape, marking the listed (ix, iy, iz) cells Occupied.
+// Builds a dense uint8 input-style occupancy array (0 = air/Empty, non-zero =
+// Occupied block) of the given shape, marking the listed (ix, iy, iz) cells
+// Occupied. Uses the explicit-dtype constructor so the array owns its buffer.
 inline std::shared_ptr<NpyArray> makeArray(std::size_t nx, std::size_t ny, std::size_t nz,
                                            const std::vector<std::array<std::size_t, 3>>& occupied = {}) {
-    std::vector<std::int8_t> data(nx * ny * nz, 0);
+    auto array = std::make_shared<NpyArray>(std::vector<std::size_t>{nx, ny, nz},
+                                            sizeof(std::uint8_t), 'u', false);
+    array->Allocate();
+    std::uint8_t* data = array->Data<std::uint8_t>();
+    std::fill(data, data + array->NumValue(), static_cast<std::uint8_t>(0));
     for (const auto& c : occupied) {
         data[(c[0] * ny + c[1]) * nz + c[2]] = 1;
     }
-    return std::make_shared<NpyArray>(std::vector<std::size_t>{nx, ny, nz}, data.data(), false);
+    return array;
 }
 
 inline Position3D posCm(double x, double y, double z) {

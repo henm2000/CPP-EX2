@@ -4,7 +4,12 @@ set(CMAKE_CXX_STANDARD 20)
 
 
 find_package(mp-units CONFIG REQUIRED)
-find_package(tinynpy CONFIG REQUIRED)
+# The vcpkg tinynpy port ships its config as TinyNPYConfig.cmake; accept either
+# spelling so the build works regardless of the installed port's casing.
+find_package(TinyNPY CONFIG QUIET)
+if(NOT TinyNPY_FOUND)
+    find_package(tinynpy CONFIG REQUIRED)
+endif()
 find_package(yaml-cpp REQUIRED) # new!
 
 add_library(drone_mapper

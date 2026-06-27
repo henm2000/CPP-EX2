@@ -70,9 +70,10 @@ int main(int argc, char** argv) {
 
         // No config => both maps share offset 0, resolution 1 cm, and their own
         // footprint as bounds (a cell-by-cell comparison).
-        const auto buildConfig = [&footprint](const NpyArray& array,
+        const dm::PhysicalLength default_res = 1.0 * dm::cm;
+        const auto buildConfig = [&footprint, &default_res](const NpyArray& array,
                                               const dm::YamlConfigLoader::MapComparisonEntry& entry) {
-            const dm::PhysicalLength res = entry.has_resolution ? entry.resolution : (1.0 * dm::cm);
+            const dm::PhysicalLength res = entry.has_resolution ? entry.resolution : default_res;
             const dm::Position3D off = entry.has_offset ? entry.offset : dm::Position3D{};
             const dm::types::MappingBounds bounds =
                 entry.has_boundaries ? entry.boundaries : footprint(array, off, res);

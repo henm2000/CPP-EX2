@@ -319,3 +319,141 @@ accordingly.
   - `./build/maps_comparison a.npy a.npy` prints `100`; different maps print
     strictly between 0 and 100; `comparison_config=<path>` variant honoured.
   - Spot-check `simulation_output.yaml` shape against the PDF example.
+
+---
+---
+
+# TEST PLAN (authoritative — written 2026-06-27, not yet implemented)
+
+> Library + both executables compile clean under `-Wall -Wextra -Werror
+> -pedantic` and run on the benchmark map (see "End-to-end status" below). This
+> section enumerates every test to write. **Do not implement until reviewed.**
+
+## Conventions & infrastructure
+- One GTest/GMock executable `drone_mapper_simulation_test`, built by the
+  existing `tests/CMakeLists.txt` glob over `tests/components/*.cpp` +
+  `tests/integration/*.cpp`. `tests/` is on the include path; helpers live in
+  `tests/test_support.h`.
+- **Suite (first TEST arg) names MUST equal the PDF gtest filters exactly:**
+  `SimulationManager`, `SimulationRun`, `MissionControl`, `DroneControl`,
+  `MappingAlgorithm`, `MockLidar`, `MapsComparison`, `Integration`.
+- **Mutation-testing design rule** (drives the whole plan):
+  - A component suite must isolate its component: inject **mocks/fakes** for all
+    dependencies so a seeded bug in another component cannot make it fail, and
+    assert the component's own behaviour precisely (target: catch >=60% of bugs
+    in its own component).
+  - Integration tests use the **real wiring** and assert end-to-end outcomes
+    (target: catch >=20% of bugs anywhere).
+- `test_support.h` helpers (already written): `makeArray(nx,ny,nz,occupied)`
+  (owning uint8, 0=air/non-zero=block), `makeConfig`, `makeBounds`, `makeDrone`,
+  `makeLidar`, `makeMission`, `posCm`, `orient`. **To add:** `writeTempNpy(...)`
+  (save an array via `NpyArray::SaveNPY` to a unique temp path) and a
+  `dataMapPath("benchmark_map.npy")` helper. Add a CMake compile definition
+  `DRONE_MAPPER_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data_maps"` so integration
+  tests can locate `data_maps/` regardless of cwd.
+- GMock interfaces to define (in test files / a shared header): `IMappingAlgorithm`
+  (note: ctor takes mission+lidar+drone+`const IMap3D&`; use
+  `using IMappingAlgorithm::IMappingAlgorithm;` + `MOCK_METHOD nextStep`),
+  `IDroneControl`, `IDroneMovement`, `IMissionControl`, `ISimulationRunFactory`,
+  `ISimulationRun` (+ a small stub run returning a fixed `SimulationResult`).
+  Prefer `NiceMock<>` and `ON_CALL` defaults; `EXPECT_CALL` only where asserting
+  call sequence/count.
+
+## Component suite: MapsComparison  (tests/components/maps_comparison_test.cpp — DRAFTED)
+1. IdenticalMapsReturn100 — same array+config twice -> 100.
+2. OppositeMapsReturnZero — all-empty vs all-occupied -> 0.
+3. SimilarMapsAreHighButNotPerfect — one differing voxel -> (90,100).
+4. DifferentResolutionsThrow — origin/target resolution mismatch -> throws (bonus skipped).
+5. MultipleTargetsProduceMultipleScores — 2 targets -> 2 scores, order preserved.
+6. PartialOverlapBounds — target bounds offset so only part overlaps -> scored on the intersection only.
+7. UnmappedCountsAsWrong — int8 output with `-1` cells vs hidden Empty -> score < 100 (Unmapped != Empty).
+8. PotentiallyOccupiedCountsAsWrong — output `-3` vs hidden Occupied/Empty -> mismatch.
+
+## Component suite: MockLidar  (tests/components/mock_lidar_test.cpp)
+Fixtures: a small hidden `Map3DImpl` with a known Occupied wall; `MockGPS` at a known pose; `MockLidar(makeLidar(...), map, gps)`.
+1. ReportsObstacleAheadWithinRange — wall ahead -> centre-beam distance in (z_min, z_max).
+2. MissReturnsMaxDistance — no obstacle -> distance == max double.
+3. TooCloseHitReturnsZero — wall closer than z_min -> distance == 0.
+4. ZeroFovCirclesGivesEmptyScan — fov_circles=0 -> empty result.
+5. BeamCountMatchesFovCircles — fov=N -> 1+4+16+... beams (sum of 4^k).
+6. ScanIsRelativeToHeading — same wall, two GPS headings -> the hit appears on the beam whose (relative angle + heading) points at the wall (verifies heading is added once).
+7. ConfigGetterReturnsInjectedConfig — config() round-trips the ctor value.
+(This suite "verifies the mock's correct implementation" per the PDF.)
+
+## Component suite: MappingAlgorithm  (tests/components/mapping_algorithm_test.cpp)
+Fixtures: a `Map3DImpl` **output** map the test pre-populates with `set(...)` to
+stage the drone's "knowledge"; `MappingAlgorithmImpl(mission, lidar, drone, output)`.
+Drone `DroneState` is supplied directly; for multi-step navigation, drive a loop
+that applies the returned `MovementCommand`s to a `MockGPS`/`MockMovement` and
+feeds the updated state back (keeps the algorithm isolated from the real lidar).
+1. FirstStepRequestsScan — fresh algo -> first `nextStep` returns a `scan_orientation`, status Working.
+2. ScansSixDirectionsBeforeMoving — stationary drone -> first six commands are the six scan orientations, no movement.
+3. FinishesWhenNothingNavigable — output all Unmapped -> after scans+expand, status Finished.
+4. NavigatesIntoEmptyNeighbour — pre-set an Empty, body-fitting corridor -> algo emits Rotate/Advance toward it.
+5. OnlyEmptyIsPassable — neighbour Occupied or Unmapped -> not navigated (no move into it).
+6. DroneSizeGatesNarrowGaps — corridor 2 voxels wide: large drone (radius> gap) -> can't fit (Finished/avoids); small drone -> navigates. (canFitAt sphere check.)
+7. MovementCommandsRespectLimits — every emitted Rotate<=max_rotate, Advance<=max_advance, Elevate<=max_elevate.
+8. ReachesFarCellViaBfs — long staged Empty corridor -> driven loop reaches the far end.
+9. ElevateUsedForVerticalNeighbour — staged Empty cell directly above -> an Elevate command is emitted.
+
+## Component suite: SimulationRun (+ MockGPS + MockMovement)  (tests/components/simulation_run_test.cpp)
+MockGPS / MockMovement (PDF: SimulationRun suite also tests these):
+1. MockGps_ReturnsAndUpdatesPose — getters + setPosition/setHeading.
+2. MockMovement_AdvancesAlongHeading — east -> +x by the distance.
+3. MockMovement_RotateUpdatesHeading — Left=+, Right=-, normalised to [0,360).
+4. MockMovement_ElevateSignedZ — positive/negative elevate moves z.
+5. MockMovement_ClampsToMax — advance/elevate/rotate beyond max are clamped.
+6. MockMovement_AdvanceAfterRotate — rotate 90 then advance -> +y.
+SimulationRun proper (build via `SimulationRunFactoryImpl` on a `writeTempNpy` map, or with mocked deps):
+7. RunReturnsResultWithConfigs — run() carries the sim+mission configs, one mission_result, output_map_file set, output_map_config populated.
+8. RunScoresCompletedRunInRange — happy path -> score in [0,100], status completed/max_steps.
+9. RunScoresErrorAsMinusOne — mission_control (mock) returns Error -> SimulationResult.mission_score == -1.
+10. ResolutionStatusFromFactor — factor<1 -> IgnoredTooSmall; ==1 -> Accepted; >1 -> Ignored.
+
+## Component suite: MissionControl  (tests/components/mission_control_test.cpp)
+Fixtures: `NiceMock<IDroneControl>` for step()/state(); real hidden+output `Map3DImpl`; temp output path.
+1. CompletesWhenDroneFinishes — step()-> Continue then Completed -> status Completed; output_map.npy saved.
+2. MaxStepsWhenNeverCompletes — step() always Continue -> status MaxSteps, steps==max_steps.
+3. DroneStepErrorPropagates — step()-> Error -> status Error, ErrorRef code DRONE_STEP_FAILED.
+4. DetectsCollisionWhileMoving — state() moves the drone into a hidden Occupied region -> Error, DRONE_HITS_OBSTACLE.
+5. DetectsInitialPositionInsideObstacle — start pose inside a block -> Error at step 0, DRONE_HITS_OBSTACLE.
+6. ReportsInvalidMissionBounds — mission_bounds max<=min -> Error, MISSION_BOUNDARY_INVALID, steps 0, (no save).
+7. ErrorLoggedImmediately — after an error, error_log.txt in the run dir contains the code (written, not deferred).
+8. NoCollisionInOpenMap — empty hidden map, drone wanders -> never DRONE_HITS_OBSTACLE.
+
+## Component suite: DroneControl  (tests/components/drone_control_test.cpp)
+Fixtures: `NiceMock<IMappingAlgorithm>` (scripted commands) + real MockGPS, MockMovement, MockLidar, output Map3DImpl. (May also use `NiceMock<IDroneMovement>` to force a movement failure.)
+1. ScanCommandAppliesToOutputMap — algo returns a scan -> output map gains Empty/Occupied cells; returns Continue.
+2. MoveCommandMovesDrone — algo returns Advance -> GPS position advances; Continue.
+3. MovementFailureReturnsError — IDroneMovement returns {false,...} -> step() Error with the message.
+4. FinishedCommandReturnsCompleted — algo status Finished -> step() Completed.
+5. MarksBodyFootprintEmpty — after a step the drone's spherical footprint is Empty in the output map.
+6. StateReflectsGpsAndStepIndex — state() == {gps pose, step count}; step index increments per step.
+7. LatestScanFedBack — the scan performed this step is passed as `latest_scan` to the next nextStep (capture via the mock).
+
+## Component suite: SimulationManager  (tests/components/simulation_manager_test.cpp)
+Fixtures: `NiceMock<ISimulationRunFactory>` whose create() returns a stub `ISimulationRun` (fixed SimulationResult).
+1. RunsCartesianProduct — composition with m missions x d drones x l lidars -> create() called m*d*l times; report.runs size matches.
+2. ReportMetadata — metric=="output_map_accuracy", score_range=={0,100}, error_score==-1, generated_at_utc non-empty/ISO-8601-ish.
+3. FactoryThrowBecomesMinusOneResult — create()/run() throws -> that run is a SimulationResult with score -1, status Error (RUN_FAILED); other runs unaffected.
+4. NestedGroupsIterated — 2 simulation_mission_groups -> runs produced for both, each carrying its own configs.
+5. PerRunOutputDirsUnique — create() receives a distinct output_path per (sim,mission,drone,lidar) (assert via captured args).
+
+## Integration suite  (tests/integration/integration_test.cpp)
+Real wiring (real factory/algorithm) unless stated. Use `DRONE_MAPPER_DATA_DIR`.
+1. RealAlgorithm_SingleVoxel_EndToEnd — `single_voxel_x4_y4_z4.npy` via SimulationManager+real factory: 1 run, status completed, score >= 0 (not -1), output_map.npy written and numpy-readable (int8), simulation_output.yaml well-formed.
+2. RealAlgorithm_Benchmark_MapsAndScores — `benchmark_map.npy`, small drone (dimensions 20), start at a verified empty interior cell, generous max_steps: completes within the time budget, **no collision**, mapped (non-Unmapped) cells above a threshold (e.g. > 8000), score > 0. (Staff-recommended.)
+3. DroneSizeChangesCoverage_Benchmark — same map+start, run a SMALL drone (dimensions 20, fits 2x2 rooms) and a LARGE drone (dimensions 30, only fits 3x3+ entrances); assert the small drone maps strictly MORE cells / reaches at least one room the large drone does not. (Exercises the map's 3x3 / 2x2 / 1x1 room-entrance feature.)
+4. MockAlgorithm_EndToEnd — `NiceMock<IMappingAlgorithm>` scripted (a few scans, a couple of moves, then Finished) wired through real DroneControl+MissionControl+MockGPS/Movement/Lidar on a small hidden map: mission completes, the scripted scans appear in the output map, GPS ended where the script drove it. (PDF integration test #2 "with a mock algorithm".)
+5. MockAlgorithm_CollisionReported — script the drone straight into a wall -> end-to-end DRONE_HITS_OBSTACLE, run score -1, error_log written, composition still returns a report.
+6. WholeGroupMapFailure_FilledMinusOne — composition referencing a missing/…bad map file -> all runs in that group scored -1, others succeed.
+7. OutputMapMatchesReportedScore — after run #1, load the produced output_map.npy + hidden map and call MapsComparison -> equals the score in simulation_output.yaml (consistency of the pipeline).
+
+## End-to-end status (already verified manually, informs the integration tests)
+- benchmark_map.npy (29x30x31, uint8 Minecraft block ids; ground z=0..14 solid,
+  house z=15..27): drone start voxel (5,5,17) = world (55,55,175) at res 10cm,
+  mission bounds [0,290)x[0,300)x[0,310), drone dimensions 30, lidar fov 4.
+- With sufficient max_steps the run **completes** in ~14.6s, maps ~14k/27k cells
+  (~95% of reachable air + wall surfaces), score ~52, no collision. With
+  max_steps 20000 it hits MaxSteps (~8s, score ~29). Integration tests should
+  set max_steps generously and assert coverage/no-collision/time, not an exact score.

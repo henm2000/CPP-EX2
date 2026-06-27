@@ -1,5 +1,6 @@
 #include <drone_mapper/Map3DImpl.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -56,15 +57,22 @@ bool Map3DImpl::withinBounds(const Position3D& pos,
            z_cm >= g.origin_z_cm && z_cm < g.origin_z_cm + static_cast<double>(g.nz) * g.res_cm;
 }
 
-// Two accepted dtypes:
-//   uint8 (input fixture convention) : 0 -> Empty,    1 -> Occupied
-//   int8  (saved-output convention)  : -1 -> Unmapped, 0 -> Empty, 1 -> Occupied
-// uint8 values are reinterpreted as int8 so a stored 255 reads back as Unmapped.
-int Map3DImpl::rawAt(NpyArray& array, std::size_t flat) {
+// Input maps are uint8/bool Minecraft-style block grids (0 = air, any non-zero
+// block id = solid). Our own saved output maps are int8 with the VoxelOccupancy
+// sentinels. The dtype char decides which convention applies.
+types::VoxelOccupancy Map3DImpl::occupancyAt(NpyArray& array, std::size_t flat) {
     if (array.Type() == 'i') {
-        return array.Data<std::int8_t>()[flat];
+        const int value = array.Data<std::int8_t>()[flat];
+        switch (value) {
+            case -1: return types::VoxelOccupancy::Unmapped;
+            case -2: return types::VoxelOccupancy::OutOfBounds;
+            case -3: return types::VoxelOccupancy::PotentiallyOccupied;
+            case 0: return types::VoxelOccupancy::Empty;
+            default: return types::VoxelOccupancy::Occupied; // 1 or any other block id
+        }
     }
-    return static_cast<std::int8_t>(array.Data<std::uint8_t>()[flat]);
+    const unsigned value = array.Data<std::uint8_t>()[flat];
+    return (value == 0) ? types::VoxelOccupancy::Empty : types::VoxelOccupancy::Occupied;
 }
 
 void Map3DImpl::writeRaw(NpyArray& array, std::size_t flat, types::VoxelOccupancy value) {
@@ -76,18 +84,7 @@ void Map3DImpl::writeRaw(NpyArray& array, std::size_t flat, types::VoxelOccupanc
     }
 }
 
-types::VoxelOccupancy Map3DImpl::occupancyFromRaw(int raw) {
-    switch (raw) {
-        case 1: return types::VoxelOccupancy::Occupied;
-        case 0: return types::VoxelOccupancy::Empty;
-        case -1: return types::VoxelOccupancy::Unmapped;
-        case -2: return types::VoxelOccupancy::OutOfBounds;
-        case -3: return types::VoxelOccupancy::PotentiallyOccupied;
-        default: return types::VoxelOccupancy::Empty;
-    }
-}
-
-void Map3DImpl::allocateFromBounds(NpyArray& array, const types::MapConfig& config) {
+std::shared_ptr<NpyArray> Map3DImpl::allocateFromBounds(const types::MapConfig& config) {
     const double res_cm = config.resolution.force_numerical_value_in(cm);
     if (res_cm <= 0.0) {
         throw std::runtime_error("Map3DImpl: resolution must be positive to allocate a map");
@@ -123,10 +120,16 @@ void Map3DImpl::allocateFromBounds(NpyArray& array, const types::MapConfig& conf
         }
     }
 
-    std::vector<std::int8_t> buf(cells[0] * cells[1] * cells[2],
-        static_cast<std::int8_t>(types::VoxelOccupancy::Unmapped));
     const std::vector<std::size_t> shape{cells[0], cells[1], cells[2]};
-    array = NpyArray{shape, buf.data(), false};
+    // Use the explicit-dtype constructor: it OWNS its buffer (the templated T*
+    // constructor is only a non-owning view) and is tagged int8 ('i'), since
+    // TinyNPY's type deduction otherwise mislabels int8_t as numpy bool.
+    auto array = std::make_shared<NpyArray>(shape, sizeof(std::int8_t), 'i', false);
+    array->Allocate();
+    std::int8_t* out = array->Data<std::int8_t>();
+    std::fill(out, out + array->NumValue(),
+              static_cast<std::int8_t>(types::VoxelOccupancy::Unmapped));
+    return array;
 }
 
 Map3DImpl::Map3DImpl(std::shared_ptr<NpyArray> map_ptr)
@@ -148,7 +151,7 @@ Map3DImpl::Map3DImpl(std::shared_ptr<NpyArray> map_ptr, const types::MapConfig m
                 std::string{"Map3DImpl: unsupported NPY dtype char '"} + type + "'");
         }
     } else if (hasBounds(config_.boundaries)) {
-        allocateFromBounds(*map_, config_);
+        map_ = allocateFromBounds(config_);
     }
 }
 
@@ -180,7 +183,7 @@ types::VoxelOccupancy Map3DImpl::atVoxel(const Position3D& pos) const {
     const std::size_t flat =
         (static_cast<std::size_t>(ix) * g.ny + static_cast<std::size_t>(iy)) * g.nz +
         static_cast<std::size_t>(iz);
-    return occupancyFromRaw(rawAt(array, flat));
+    return occupancyAt(array, flat);
 }
 
 types::MapConfig Map3DImpl::getMapConfig() const {

@@ -60,10 +60,14 @@ bool MappingAlgorithmImpl::canFitAt(const Position3D& pos) const {
     const double radius =
         std::max(0.0, drone_config_.radius.force_numerical_value_in(cm) - kEdgeInset);
     const double slack = 1e-9;
+    const double r2 = radius * radius;
 
     for (double wx = -radius; wx <= radius + slack; wx += step) {
         for (double wy = -radius; wy <= radius + slack; wy += step) {
             for (double wz = -radius; wz <= radius + slack; wz += step) {
+                if (wx * wx + wy * wy + wz * wz > r2) {
+                    continue; // the drone is a sphere; ignore box corners
+                }
                 const Position3D sample{
                     pos.x + wx * x_extent[cm],
                     pos.y + wy * y_extent[cm],

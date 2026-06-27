@@ -27,10 +27,15 @@ public:
 private:
     // Applies one algorithm-issued movement command to the actuator.
     [[nodiscard]] types::MovementResult applyMovement(const types::MovementCommand& command);
+    // Marks the drone's body footprint Empty in the output map. The drone
+    // physically occupies this region (it got here without colliding), so it is
+    // provably free space; this bootstraps the algorithm's body-fit checks,
+    // which the sparse lidar cones alone cannot satisfy near the drone.
+    void markBodyEmpty(const Position3D& center);
 
+    types::DroneConfigData drone_;
     // Retained from the prescribed constructor; the mapping algorithm owns its
-    // own copies of these configs, so DroneControl itself does not read them.
-    [[maybe_unused]] types::DroneConfigData drone_;
+    // own copy of the mission config, so DroneControl itself does not read it.
     [[maybe_unused]] types::MissionConfigData mission_;
     ILidar& lidar_;
     IGPS& gps_;

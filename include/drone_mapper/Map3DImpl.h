@@ -49,14 +49,16 @@ private:
     [[nodiscard]] static bool withinBounds(const Position3D& pos,
                                            const types::MapConfig& config,
                                            const GridGeometry& geometry);
-    // dtype-aware raw cell access: uint8 is reinterpreted as int8 so a stored
-    // 255 reads back as Unmapped.
-    [[nodiscard]] static int rawAt(NpyArray& array, std::size_t flat);
+    // dtype-aware occupancy read:
+    //   uint8/bool input maps  : 0 = air (Empty), any non-zero block id = Occupied
+    //   int8 saved-output maps : -1=Unmapped, -2=OutOfBounds, -3=PotentiallyOccupied,
+    //                            0=Empty, otherwise Occupied
+    [[nodiscard]] static types::VoxelOccupancy occupancyAt(NpyArray& array, std::size_t flat);
     static void writeRaw(NpyArray& array, std::size_t flat, types::VoxelOccupancy value);
-    [[nodiscard]] static types::VoxelOccupancy occupancyFromRaw(int raw);
-    // Builds the dense int8 grid for an output map over [offset, bounds max),
-    // every cell initialised to Unmapped.
-    static void allocateFromBounds(NpyArray& array, const types::MapConfig& config);
+    // Builds a new dense int8 grid for an output map over [offset, bounds max),
+    // every cell initialised to Unmapped (NpyArray is move-only, so this returns
+    // a fresh array rather than assigning into an existing one).
+    [[nodiscard]] static std::shared_ptr<NpyArray> allocateFromBounds(const types::MapConfig& config);
 
     // Changed: shared ownership supports the new pointer-based storage member.
     std::shared_ptr<NpyArray> map_;

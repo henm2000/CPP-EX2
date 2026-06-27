@@ -31,10 +31,16 @@ bool MissionControlImpl::bodyOverlapsObstacle(const Position3D& centre,
                                               double radius_cm,
                                               double step_cm) const {
     const double slack = 1e-9;
-    const double r = std::max(0.0, radius_cm);
+    // Slightly smaller than the planner's fit radius so the drone never trips a
+    // collision on a wall it legitimately planned to clear (discretisation slack).
+    const double r = std::max(0.0, radius_cm - 0.5 * step_cm);
+    const double r2 = r * r;
     for (double wx = -r; wx <= r + slack; wx += step_cm) {
         for (double wy = -r; wy <= r + slack; wy += step_cm) {
             for (double wz = -r; wz <= r + slack; wz += step_cm) {
+                if (wx * wx + wy * wy + wz * wz > r2) {
+                    continue; // spherical body
+                }
                 const Position3D p{
                     centre.x + wx * x_extent[cm],
                     centre.y + wy * y_extent[cm],
