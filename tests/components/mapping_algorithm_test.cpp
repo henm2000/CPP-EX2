@@ -220,6 +220,42 @@ TEST(MappingAlgorithm, ReachesFarCellViaBfs) {
     EXPECT_GE(r.max_x_cm, 94.0);
 }
 
+TEST(MappingAlgorithm, RotatesBeforeAdvancingToSideNeighbour) {
+    // Drone faces +x; the only navigable neighbour is +y. The algorithm must rotate
+    // to face the target before advancing (it cannot strafe). So the first move is a
+    // Rotate and an Advance only follows it.
+    Map3DImpl out = makeOutput();
+    out.set(posCm(25, 35, 25), types::VoxelOccupancy::Empty); // +y neighbour, Empty
+    MappingAlgorithmImpl algo(makeMission(makeBounds(0, 50, 0, 50, 0, 50)),
+                              makeLidar(), makeDrone(1.0), out);
+    MockGPS gps(posCm(25, 25, 25), orient(0), 10 * cm); // facing +x
+    MockMovement mover(gps, makeDrone(1.0));
+    const DriveResult r = drive(algo, gps, mover);
+
+    ASSERT_FALSE(r.moves.empty());
+    EXPECT_EQ(r.moves.front().type, types::MovementCommandType::Rotate); // turn first
+    const bool advanced = std::any_of(r.moves.begin(), r.moves.end(),
+        [](const types::MovementCommand& m) { return m.type == types::MovementCommandType::Advance; });
+    EXPECT_TRUE(advanced); // and advance only after having rotated
+}
+
+TEST(MappingAlgorithm, UnreachableEmptyCellFinishesWithoutLooping) {
+    // A lone Empty cell with no Empty path to it (its neighbours are Unmapped) is
+    // unreachable. The algorithm must recognise this and finish rather than spin
+    // forever; drive() returns finished only if nextStep reported Finished within
+    // the iteration cap.
+    Map3DImpl out = makeOutput(80.0); // 8^3 cells
+    out.set(posCm(55, 25, 25), types::VoxelOccupancy::Empty); // isolated, no Empty path from start
+    MappingAlgorithmImpl algo(makeMission(makeBounds(0, 80, 0, 80, 0, 80)),
+                              makeLidar(), makeDrone(1.0), out);
+    MockGPS gps(posCm(25, 25, 25), orient(0), 10 * cm);
+    MockMovement mover(gps, makeDrone(1.0));
+    const DriveResult r = drive(algo, gps, mover);
+
+    EXPECT_TRUE(r.finished);       // terminated (no infinite loop)
+    EXPECT_TRUE(r.moves.empty());  // never moved toward the unreachable cell
+}
+
 TEST(MappingAlgorithm, ElevateUsedForVerticalNeighbour) {
     Map3DImpl out = makeOutput();
     out.set(posCm(25, 25, 35), types::VoxelOccupancy::Empty); // +z neighbour, Empty

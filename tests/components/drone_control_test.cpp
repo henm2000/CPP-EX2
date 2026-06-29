@@ -176,6 +176,63 @@ TEST(DroneControl, MarksBodyFootprintEmpty) {
     EXPECT_EQ(output.atVoxel(posCm(25, 25, 25)), types::VoxelOccupancy::Empty); // footprint marked
 }
 
+TEST(DroneControl, MovementAppliedBeforeScanInSameStep) {
+    // A single command carrying BOTH a movement and a scan must apply the movement
+    // first (the IMappingAlgorithm contract). Mock the movement and the lidar so
+    // testing::InSequence pins advance() strictly before scan().
+    Map3DImpl output = outputMap();
+    const auto drone = makeDrone(5);
+    const auto lidarcfg = makeLidar();
+
+    MockGPS gps(posCm(25, 25, 25), orient(0), 10 * cm);
+    NiceMock<MockDroneMovement> mover;
+    ON_CALL(mover, advance(_)).WillByDefault(Return(types::MovementResult{true, {}}));
+    NiceMock<MockLidarSensor> lidar;
+    ON_CALL(lidar, config()).WillByDefault(Return(lidarcfg));
+    ON_CALL(lidar, scan(_)).WillByDefault(Return(types::LidarScanResult{}));
+    NiceMock<MockMappingAlgorithm> algo(makeMission(makeBounds(0, 100, 0, 100, 0, 100)), lidarcfg, drone, output);
+
+    types::MappingStepCommand both;
+    both.movement = advance(10);
+    both.scan_orientation = orient(0);
+    both.status = types::AlgorithmStatus::Working;
+    ON_CALL(algo, nextStep(_, _)).WillByDefault(Return(both));
+
+    {
+        testing::InSequence seq;
+        EXPECT_CALL(mover, advance(_));
+        EXPECT_CALL(lidar, scan(_));
+    }
+
+    DroneControlImpl dc(drone, makeMission(makeBounds(0, 100, 0, 100, 0, 100)),
+                        lidar, gps, mover, output, algo);
+    EXPECT_EQ(dc.step().status, types::DroneStepStatus::Continue);
+}
+
+TEST(DroneControl, BodyEmptyMarkingRespectsSphericalRadius) {
+    // markBodyEmpty marks the drone's spherical footprint Empty, not a cube. With
+    // radius 5 the centre and face-axis neighbours fall inside the sphere, but the
+    // box-corner cell (offset (5,5,5), distance > radius) must stay Unmapped.
+    Map3DImpl hidden(makeArray(10, 10, 10), makeConfig(makeBounds(0, 100, 0, 100, 0, 100), 10));
+    Map3DImpl output = outputMap();
+    const auto drone = makeDrone(5);
+    const auto lidarcfg = makeLidar();
+
+    MockGPS gps(posCm(25, 25, 25), orient(0), 10 * cm);
+    MockMovement mover(gps, drone);
+    MockLidar lidar(lidarcfg, hidden, gps);
+    NiceMock<MockMappingAlgorithm> algo(makeMission(makeBounds(0, 100, 0, 100, 0, 100)), lidarcfg, drone, output);
+    ON_CALL(algo, nextStep(_, _)).WillByDefault(Return(noopCmd())); // no scan, no move
+
+    DroneControlImpl dc(drone, makeMission(makeBounds(0, 100, 0, 100, 0, 100)),
+                        lidar, gps, mover, output, algo);
+    (void)dc.step();
+
+    EXPECT_EQ(output.atVoxel(posCm(25, 25, 25)), types::VoxelOccupancy::Empty);    // centre
+    EXPECT_EQ(output.atVoxel(posCm(35, 25, 25)), types::VoxelOccupancy::Empty);    // face neighbour (in sphere)
+    EXPECT_EQ(output.atVoxel(posCm(35, 35, 35)), types::VoxelOccupancy::Unmapped); // box corner (outside sphere)
+}
+
 TEST(DroneControl, StateReflectsGpsAndStepIndex) {
     Map3DImpl hidden(makeArray(10, 10, 10), makeConfig(makeBounds(0, 100, 0, 100, 0, 100), 10));
     Map3DImpl output = outputMap();

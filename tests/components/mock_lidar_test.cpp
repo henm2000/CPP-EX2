@@ -7,8 +7,10 @@
 #include "test_support.h"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numbers>
 #include <utility>
 #include <vector>
 
@@ -127,6 +129,52 @@ TEST(MockLidar, ScanIsRelativeToHeading) {
 
     // Still facing north, relative scan -90 re-aims east at the wall -> finite hit.
     EXPECT_LT(lidar.scan(orient(-90)).front().distance.force_numerical_value_in(cm), kMiss);
+}
+
+TEST(MockLidar, ObstacleAtZMaxIsDetectedButBeyondIsNot) {
+    // Drone at x=55 facing +x; a wall slab fills cell 15 (x in [150,160)), so its
+    // near face sits exactly 95cm ahead. A z_max of 95 must still see it; 94 (just
+    // shy) must miss it. This pins the full-range march -- a ray that only travels
+    // a fraction of z_max (the bug example in the grading guideline) would miss.
+    Map3DImpl map = makeWallMap(20, 20, 5, /*wall_ix=*/15);
+    MockGPS gps(posCm(55, 55, 25), orient(0), 10 * cm);
+
+    MockLidar at_range(makeLidar(20, /*z_max=*/95), map, gps);
+    const double d = at_range.scan(orient(0)).front().distance.force_numerical_value_in(cm);
+    EXPECT_LT(d, kMiss);          // detected at the very end of the range
+    EXPECT_NEAR(d, 95.0, 1.5);    // and reports ~the true 95cm distance
+
+    MockLidar just_short(makeLidar(20, /*z_max=*/94), map, gps);
+    EXPECT_DOUBLE_EQ(just_short.scan(orient(0)).front().distance.force_numerical_value_in(cm),
+                     kMiss);       // one cm short of the wall -> not detected
+}
+
+TEST(MockLidar, OuterCircleSpreadMatchesDcm) {
+    // With fov=2 the four circle-1 beams sit at angular offset atan(d / z_min) from
+    // the centre beam, spread around the circle (i=0 -> +horizontal, i=1 -> +altitude,
+    // i=2 -> -horizontal, i=3 -> -altitude). This catches bugs in the d_cm spacing,
+    // which BeamCountMatchesFovCircles (count only) would not.
+    Map3DImpl map = makeWallMap(); // open: every beam misses, angles are unaffected
+    MockGPS gps(posCm(55, 55, 25), orient(0), 10 * cm);
+    const double d_cm = 2.5;
+    const double z_min_cm = 20.0;
+    MockLidar lidar(makeLidar(z_min_cm, 200, d_cm, /*fov=*/2), map, gps);
+
+    const auto scan = lidar.scan(orient(0));
+    ASSERT_EQ(scan.size(), 5u); // centre + 4
+    const double expected_deg = std::atan2(d_cm, z_min_cm) * 180.0 / std::numbers::pi;
+
+    const auto hdeg = [](const types::LidarHit& h) { return h.angle.horizontal.force_numerical_value_in(deg); };
+    const auto adeg = [](const types::LidarHit& h) { return h.angle.altitude.force_numerical_value_in(deg); };
+
+    EXPECT_NEAR(hdeg(scan[0]), 0.0, 1e-9); // centre beam straight ahead
+    EXPECT_NEAR(adeg(scan[0]), 0.0, 1e-9);
+    EXPECT_NEAR(hdeg(scan[1]), expected_deg, 1e-6);  // +x on the circle
+    EXPECT_NEAR(adeg(scan[1]), 0.0, 1e-6);
+    EXPECT_NEAR(adeg(scan[2]), expected_deg, 1e-6);  // +y on the circle
+    EXPECT_NEAR(hdeg(scan[2]), 0.0, 1e-6);
+    EXPECT_NEAR(hdeg(scan[3]), -expected_deg, 1e-6); // -x on the circle
+    EXPECT_NEAR(adeg(scan[4]), -expected_deg, 1e-6); // -y on the circle
 }
 
 TEST(MockLidar, ConfigGetterReturnsInjectedConfig) {

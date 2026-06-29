@@ -8,6 +8,7 @@
 
 #include <drone_mapper/IDroneControl.h>
 #include <drone_mapper/IDroneMovement.h>
+#include <drone_mapper/ILidar.h>
 #include <drone_mapper/IMap3D.h>
 #include <drone_mapper/IMappingAlgorithm.h>
 #include <drone_mapper/IMissionControl.h>
@@ -42,6 +43,14 @@ public:
                 (types::RotationDirection direction, HorizontalAngle angle), (override));
     MOCK_METHOD(types::MovementResult, advance, (PhysicalLength distance), (override));
     MOCK_METHOD(types::MovementResult, elevate, (PhysicalLength distance), (override));
+};
+
+// ILidar double, used to assert DroneControl's movement-before-scan ordering
+// without depending on the real ray-marching MockLidar.
+class MockLidarSensor : public ILidar {
+public:
+    MOCK_METHOD(types::LidarScanResult, scan, (Orientation scan_orientation), (const, override));
+    MOCK_METHOD(types::LidarConfigData, config, (), (const, override));
 };
 
 class MockMissionControl : public IMissionControl {

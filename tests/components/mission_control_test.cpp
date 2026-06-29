@@ -122,6 +122,66 @@ TEST(MissionControl, DetectsCollisionWhileMoving) {
     EXPECT_EQ(r.errors.front().code, "DRONE_HITS_OBSTACLE");
 }
 
+TEST(MissionControl, DetectsCollisionMidSegmentNotJustEndpoints) {
+    // Wall cell (4,2,2) -> world (45,25,25). The drone moves x=25 -> x=65 in ONE
+    // step; both endpoints (cells 2 and 6) are free, so only the swept sub-stepping
+    // catches the wall sitting midway. An endpoint-only check would pass it.
+    Map3DImpl hidden(makeArray(9, 5, 5, {{4, 2, 2}}),
+                     makeConfig(makeBounds(0, 90, 0, 50, 0, 50), 10));
+    Map3DImpl output = outputMap();
+    NiceMock<MockDroneControl> dc;
+    EXPECT_CALL(dc, state())
+        .WillOnce(Return(stateAt(25, 25, 25)))   // start: free
+        .WillRepeatedly(Return(stateAt(65, 25, 25))); // end: also free
+    ON_CALL(dc, step()).WillByDefault(Return(cont()));
+    const auto dir = runDir();
+
+    MissionControlImpl mc(makeMission(makeBounds(0, 90, 0, 50, 0, 50), 10), makeDrone(8),
+                          hidden, output, dc, dir / "output_map.npy");
+    const types::MissionRunResult r = mc.runMission();
+
+    EXPECT_EQ(r.status, types::MissionRunStatus::Error);
+    ASSERT_FALSE(r.errors.empty());
+    EXPECT_EQ(r.errors.front().code, "DRONE_HITS_OBSTACLE");
+}
+
+TEST(MissionControl, SphericalBodyClearsBoxCornerObstacle) {
+    // Drone (radius 10.5) centred at (25,25,25). An obstacle at the diagonal "box
+    // corner" cell (3,3,3) is outside the spherical body, so the run proceeds; the
+    // same-distance-class obstacle on a face axis (cell (3,2,2)) IS inside the
+    // sphere and collides. This pins spherical collision, not a bounding box.
+    NiceMock<MockDroneControl> dc;
+    ON_CALL(dc, state()).WillByDefault(Return(stateAt(25, 25, 25)));
+
+    // Corner obstacle only: the sphere never reaches it -> run completes.
+    {
+        Map3DImpl hidden(makeArray(6, 6, 6, {{3, 3, 3}}),
+                         makeConfig(makeBounds(0, 60, 0, 60, 0, 60), 10));
+        Map3DImpl output = outputMap();
+        EXPECT_CALL(dc, step()).WillOnce(Return(done()));
+        const auto dir = runDir();
+        MissionControlImpl mc(makeMission(makeBounds(0, 60, 0, 60, 0, 60), 10), makeDrone(10.5),
+                              hidden, output, dc, dir / "output_map.npy");
+        const types::MissionRunResult r = mc.runMission();
+        EXPECT_EQ(r.status, types::MissionRunStatus::Completed);
+        EXPECT_TRUE(r.errors.empty());
+    }
+
+    // Face-axis obstacle within the sphere: collides immediately.
+    {
+        Map3DImpl hidden(makeArray(6, 6, 6, {{3, 2, 2}}),
+                         makeConfig(makeBounds(0, 60, 0, 60, 0, 60), 10));
+        Map3DImpl output = outputMap();
+        const auto dir = runDir();
+        MissionControlImpl mc(makeMission(makeBounds(0, 60, 0, 60, 0, 60), 10), makeDrone(10.5),
+                              hidden, output, dc, dir / "output_map.npy");
+        const types::MissionRunResult r = mc.runMission();
+        EXPECT_EQ(r.status, types::MissionRunStatus::Error);
+        ASSERT_FALSE(r.errors.empty());
+        EXPECT_EQ(r.errors.front().code, "DRONE_HITS_OBSTACLE");
+    }
+}
+
 TEST(MissionControl, DetectsInitialPositionInsideObstacle) {
     Map3DImpl hidden = hiddenMap({{2, 2, 2}}); // wall at the start cell (25,25,25)
     Map3DImpl output = outputMap();

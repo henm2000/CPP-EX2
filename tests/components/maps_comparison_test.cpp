@@ -93,6 +93,30 @@ TEST(MapsComparison, PartialOverlapBoundsScoredOnIntersectionOnly) {
     EXPECT_DOUBLE_EQ(scores.front(), 100.0);
 }
 
+TEST(MapsComparison, HalfCorrectScoresFifty) {
+    // 2x2x2 = 8 shared voxels. Hidden is all Empty; the output agrees (Empty) on
+    // exactly 4 of them and is left Unmapped on the other 4 -> precisely 50.0.
+    const auto config = makeConfig(makeBounds(0, 20, 0, 20, 0, 20), 10);
+    auto hidden_arr = makeArray(2, 2, 2); // all Empty
+    Map3DImpl hidden(hidden_arr, config);
+
+    Map3DImpl output(std::make_shared<NpyArray>(), config); // int8, all Unmapped
+    int set_empty = 0;
+    for (std::size_t x = 0; x < 2; ++x) {
+        for (std::size_t y = 0; y < 2; ++y) {
+            for (std::size_t z = 0; z < 2; ++z) {
+                if (set_empty++ < 4) {
+                    output.set(posCm(10.0 * x + 5, 10.0 * y + 5, 10.0 * z + 5),
+                               types::VoxelOccupancy::Empty);
+                }
+            }
+        }
+    }
+
+    const std::vector<double> scores = MapsComparison::compare(hidden, {&output});
+    EXPECT_DOUBLE_EQ(scores.front(), 50.0);
+}
+
 TEST(MapsComparison, UnmappedCountsAsWrong) {
     // Hidden map: all Empty. Output map (int8): all Empty except one cell left
     // Unmapped (-1). The single Unmapped cell must score as a mismatch against
