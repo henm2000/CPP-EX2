@@ -8,8 +8,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace drone_mapper::test_support {
@@ -75,6 +79,32 @@ inline types::MissionConfigData makeMission(const types::MappingBounds& bounds,
     mission.output_mapping_resolution_factor = resolution_factor;
     mission.mission_bounds = bounds;
     return mission;
+}
+
+// Saves an array to a unique temp .npy file and returns its path, so tests that
+// need a real on-disk map (SimulationRun factory, integration) can produce one.
+inline std::filesystem::path writeTempNpy(const std::shared_ptr<NpyArray>& array) {
+    static std::atomic<unsigned long long> counter{0};
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "drone_mapper_tests";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const std::filesystem::path path =
+        dir / ("map_" + std::to_string(counter.fetch_add(1)) + "_" +
+               std::to_string(reinterpret_cast<std::uintptr_t>(array.get())) + ".npy");
+    if (const char* err = array->SaveNPY(path.string())) {
+        throw std::runtime_error(std::string{"writeTempNpy: "} + err);
+    }
+    return path;
+}
+
+// Absolute path to a map shipped under tests/data_maps via the
+// DRONE_MAPPER_DATA_DIR compile definition (set by tests/CMakeLists.txt).
+inline std::filesystem::path dataMapPath(const std::string& name) {
+#ifdef DRONE_MAPPER_DATA_DIR
+    return std::filesystem::path{DRONE_MAPPER_DATA_DIR} / name;
+#else
+    return std::filesystem::path{"data_maps"} / name;
+#endif
 }
 
 } // namespace drone_mapper::test_support

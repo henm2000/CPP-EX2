@@ -3,8 +3,11 @@
 #include <chrono>
 #include <ctime>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -75,6 +78,14 @@ types::SimulationManagerReport SimulationManager::run(const types::SimulationCom
                             run_factory_->create(simulation, mission, drone, lidar, run_dir);
                         runs.push_back(run->run());
                     } catch (const std::exception& e) {
+                        // Log the failure to this run's error log immediately (not
+                        // deferred to the final report), then record a -1 result.
+                        std::error_code ec;
+                        std::filesystem::create_directories(run_dir, ec);
+                        std::ofstream log(run_dir / "error_log.txt", std::ios::app);
+                        if (log) {
+                            log << "RUN_FAILED: " << e.what() << "\n";
+                        }
                         runs.push_back(makeErrorResult(simulation, mission, "RUN_FAILED", e.what()));
                     }
                     ++lidar_index;

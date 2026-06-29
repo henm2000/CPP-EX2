@@ -4,7 +4,10 @@
 
 #include <cmath>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -54,6 +57,15 @@ types::SimulationResult SimulationRunImpl::run() {
     types::ResolutionRequestStatus resolution_status;
     if (factor < 1.0) {
         resolution_status = types::ResolutionRequestStatus::IgnoredTooSmall;
+        // The PDF requires the "< 1" case to be logged immediately to the error log.
+        std::error_code ec;
+        const std::filesystem::path log_path = output_map_file_.parent_path() / "error_log.txt";
+        std::filesystem::create_directories(log_path.parent_path(), ec);
+        std::ofstream log(log_path, std::ios::app);
+        if (log) {
+            log << "RESOLUTION_TOO_SMALL: output_mapping_resolution_factor < 1; "
+                   "using the default (GPS) resolution\n";
+        }
     } else if (std::abs(factor - 1.0) < 1e-9) {
         resolution_status = types::ResolutionRequestStatus::Accepted;
     } else {

@@ -323,11 +323,32 @@ accordingly.
 ---
 ---
 
-# TEST PLAN (authoritative — written 2026-06-27, not yet implemented)
+# TEST PLAN (authoritative — written 2026-06-27)
 
 > Library + both executables compile clean under `-Wall -Wextra -Werror
 > -pedantic` and run on the benchmark map (see "End-to-end status" below). This
-> section enumerates every test to write. **Do not implement until reviewed.**
+> section enumerates every test to write.
+>
+> IMPLEMENTATION PROGRESS: ALL SUITES DONE 2026-06-29 — 63 tests, all green,
+>   library + tests compile clean under -Wall -Wextra -Werror -pedantic (Release).
+>   [x] MapsComparison    — 8/8
+>   [x] MockLidar         — 7/7
+>   [x] MappingAlgorithm  — 9/9
+>   [x] SimulationRun (+ MockGPS + MockMovement) — 11/11
+>   [x] MissionControl    — 8/8
+>   [x] DroneControl      — 7/7
+>   [x] SimulationManager — 6/6
+>   [x] Integration       — 7/7
+> Infra: tests/test_support.h (writeTempNpy, dataMapPath), tests/test_mocks.h
+>   (GMock doubles), DRONE_MAPPER_DATA_DIR compile def. Build target
+>   drone_mapper_simulation_test; run ./tests/drone_mapper_simulation_test.
+> NOTE: Integration #3 (DroneSizeChangesCoverage_Benchmark) runs THREE drone sizes
+>   matching the benchmark's 1x1/2x2/3x3 room entrances (radius 5/10/15 = diameter
+>   10/20/30cm at 10cm voxels). It asserts all collision-free + each maps >2000 +
+>   the three maps are pairwise distinct. It does NOT assert "smaller maps more":
+>   that ordering only holds at full exploration (~15.6k/15.5k/14.0k cells, ~60s
+>   total) — at a bounded max_steps the largest drone finishes first and maps the
+>   most, so the ordering inverts. The test caps max_steps 8000 for speed (~8s).
 
 ## Conventions & infrastructure
 - One GTest/GMock executable `drone_mapper_simulation_test`, built by the
@@ -344,6 +365,11 @@ accordingly.
     in its own component).
   - Integration tests use the **real wiring** and assert end-to-end outcomes
     (target: catch >=20% of bugs anywhere).
+- **One feature per test.** Each component TEST exercises exactly ONE behaviour
+  with ONE focused assertion target; everything the component depends on is a
+  GMock (`NiceMock` + `ON_CALL`, `EXPECT_CALL` only to assert a call/sequence).
+  No test should pass/fail for more than one reason. (Integration tests are the
+  only place multiple real components combine.)
 - `test_support.h` helpers (already written): `makeArray(nx,ny,nz,occupied)`
   (owning uint8, 0=air/non-zero=block), `makeConfig`, `makeBounds`, `makeDrone`,
   `makeLidar`, `makeMission`, `posCm`, `orient`. **To add:** `writeTempNpy(...)`
@@ -359,7 +385,7 @@ accordingly.
   Prefer `NiceMock<>` and `ON_CALL` defaults; `EXPECT_CALL` only where asserting
   call sequence/count.
 
-## Component suite: MapsComparison  (tests/components/maps_comparison_test.cpp — DRAFTED)
+## Component suite: MapsComparison  (tests/components/maps_comparison_test.cpp — DONE, 8/8 pass)
 1. IdenticalMapsReturn100 — same array+config twice -> 100.
 2. OppositeMapsReturnZero — all-empty vs all-occupied -> 0.
 3. SimilarMapsAreHighButNotPerfect — one differing voxel -> (90,100).
@@ -367,18 +393,29 @@ accordingly.
 5. MultipleTargetsProduceMultipleScores — 2 targets -> 2 scores, order preserved.
 6. PartialOverlapBounds — target bounds offset so only part overlaps -> scored on the intersection only.
 7. UnmappedCountsAsWrong — int8 output with `-1` cells vs hidden Empty -> score < 100 (Unmapped != Empty).
-8. PotentiallyOccupiedCountsAsWrong — output `-3` vs hidden Occupied/Empty -> mismatch.
+8. PotentiallyOccupiedCountsAsWrong — an output cell set to `VoxelOccupancy::PotentiallyOccupied`
+   (== -3 in the LOCKED MapTypes.h; written by the course's ScanResultToVoxels when a hit is
+   closer than z_min) vs a hidden Empty/Occupied cell -> counts as a mismatch (so the produced
+   map is penalised for "uncertain" voxels). Build this output map by `set(pos, PotentiallyOccupied)`.
 
-## Component suite: MockLidar  (tests/components/mock_lidar_test.cpp)
+## Component suite: MockLidar  (tests/components/mock_lidar_test.cpp — DONE, 7/7 pass)
 Fixtures: a small hidden `Map3DImpl` with a known Occupied wall; `MockGPS` at a known pose; `MockLidar(makeLidar(...), map, gps)`.
 1. ReportsObstacleAheadWithinRange — wall ahead -> centre-beam distance in (z_min, z_max).
-2. MissReturnsMaxDistance — no obstacle -> distance == max double.
-3. TooCloseHitReturnsZero — wall closer than z_min -> distance == 0.
-4. ZeroFovCirclesGivesEmptyScan — fov_circles=0 -> empty result.
-5. BeamCountMatchesFovCircles — fov=N -> 1+4+16+... beams (sum of 4^k).
+2. MissReturnsMaxDistance — no obstacle along the beam -> hit.distance == max-double cm.
+   NOTE: HW2's `LidarHit` (locked LidarTypes.h) has NO optional; a miss is the
+   sentinel `std::numeric_limits<double>::max() * cm`, not an empty optional. Assert
+   `hit.distance.force_numerical_value_in(cm) == std::numeric_limits<double>::max()`.
+3. TooCloseHitReturnsZero — wall closer than z_min -> distance == 0 cm.
+4. ZeroOrOneFovCircleFiresOnlyCenterBeam — fov_circles==0 AND fov_circles==1 each ->
+   exactly ONE beam (circle 0), aimed at heading + scan_orientation. (Per ex1, circle 0 is
+   always fired; the stub's early-return-empty for 0 was removed — see code note below.)
+5. BeamCountMatchesFovCircles — fov=N>=1 -> sum_{k=0}^{N-1} 4^k beams (1, 5, 21, 85, ...).
 6. ScanIsRelativeToHeading — same wall, two GPS headings -> the hit appears on the beam whose (relative angle + heading) points at the wall (verifies heading is added once).
 7. ConfigGetterReturnsInjectedConfig — config() round-trips the ctor value.
 (This suite "verifies the mock's correct implementation" per the PDF.)
+CODE NOTE: MockLidar was changed so fov_circles==0 still fires circle 0 (ex1 semantics:
+"circle 0 is always fired, even when FOVC=0"), since the PDF says lidar definitions are "as
+in ex1". The course stub's `if (fov_circles==0) return {};` early-return was removed.
 
 ## Component suite: MappingAlgorithm  (tests/components/mapping_algorithm_test.cpp)
 Fixtures: a `Map3DImpl` **output** map the test pre-populates with `set(...)` to
@@ -409,6 +446,8 @@ SimulationRun proper (build via `SimulationRunFactoryImpl` on a `writeTempNpy` m
 8. RunScoresCompletedRunInRange — happy path -> score in [0,100], status completed/max_steps.
 9. RunScoresErrorAsMinusOne — mission_control (mock) returns Error -> SimulationResult.mission_score == -1.
 10. ResolutionStatusFromFactor — factor<1 -> IgnoredTooSmall; ==1 -> Accepted; >1 -> Ignored.
+11. ResolutionTooSmallLoggedImmediately — factor<1 -> besides IgnoredTooSmall, the run's
+    error_log.txt contains a RESOLUTION_TOO_SMALL line (PDF: "< 1 ... ignored with error log").
 
 ## Component suite: MissionControl  (tests/components/mission_control_test.cpp)
 Fixtures: `NiceMock<IDroneControl>` for step()/state(); real hidden+output `Map3DImpl`; temp output path.
@@ -438,6 +477,23 @@ Fixtures: `NiceMock<ISimulationRunFactory>` whose create() returns a stub `ISimu
 3. FactoryThrowBecomesMinusOneResult — create()/run() throws -> that run is a SimulationResult with score -1, status Error (RUN_FAILED); other runs unaffected.
 4. NestedGroupsIterated — 2 simulation_mission_groups -> runs produced for both, each carrying its own configs.
 5. PerRunOutputDirsUnique — create() receives a distinct output_path per (sim,mission,drone,lidar) (assert via captured args).
+6. FactoryFailureLoggedToFile — create() throws (e.g. bad map) -> that run's run_dir/error_log.txt
+   contains a RUN_FAILED line (logged immediately, not just placed in the deferred report).
+
+## Edge cases & immediate error logging — coverage to assert
+Every error must be written to a file the moment it happens (PDF: "not deferred"). Mapping of
+edge case -> where it is detected/logged -> the component test that asserts the log line:
+- mission bounds min >= max (incl. min > max)  -> MissionControl `MISSION_BOUNDARY_INVALID` (steps 0) -> MissionControl #6/#7.
+- drone starts inside an obstacle               -> MissionControl `DRONE_HITS_OBSTACLE` (step 0)    -> MissionControl #5.
+- drone body hits an obstacle while moving       -> MissionControl `DRONE_HITS_OBSTACLE`             -> MissionControl #4.
+- a drone step returns Error                      -> MissionControl `DRONE_STEP_FAILED`               -> MissionControl #3.
+- output map fails to save                        -> MissionControl `OUTPUT_SAVE_FAILED`              -> (add MissionControl #9: save to a read-only/invalid path -> Error + log).
+- map file missing / unreadable                  -> SimulationManager `RUN_FAILED` (whole group -1) -> SimulationManager #6 + Integration #6.
+- output_mapping_resolution_factor < 1           -> SimulationRun `RESOLUTION_TOO_SMALL`             -> SimulationRun #11.
+- composition file missing/unreadable            -> main prints to stderr, returns 1 (cannot run any run) -> covered by a tiny main-level check (optional smoke test, not a gtest suite).
+NOTE (open item): bad/missing values inside an individual config yaml are currently RECOVERED
+silently with defaults (no log). ex1 logged these. If we want parity, thread an error sink
+through YamlConfigLoader and have it append to an output-level log — decide before implementing.
 
 ## Integration suite  (tests/integration/integration_test.cpp)
 Real wiring (real factory/algorithm) unless stated. Use `DRONE_MAPPER_DATA_DIR`.

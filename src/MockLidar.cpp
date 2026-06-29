@@ -36,10 +36,10 @@ types::LidarConfigData MockLidar::config() const{
 
 types::LidarScanResult MockLidar::scan(Orientation scan_orientation) const {
     types::LidarScanResult results;
-    if (config_.fov_circles == 0) {
-        return results;
-    }
 
+    // Circle 0 (the single central beam, aimed at heading + scan_orientation) is
+    // ALWAYS fired, even when fov_circles == 0 — lidar semantics follow ex1,
+    // where circle 0 is always present and the outer-circle loop runs 1..fov-1.
     const Orientation sensor_heading = gps_.heading();
     const Orientation center_beam_abs{
         scan_orientation.horizontal + sensor_heading.horizontal,

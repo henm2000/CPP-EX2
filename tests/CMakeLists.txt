@@ -22,6 +22,9 @@ if(DRONE_MAPPER_TEST_SOURCES)
     )
     target_compile_features(drone_mapper_simulation_test PRIVATE cxx_std_20)
     target_include_directories(drone_mapper_simulation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    # Integration tests locate the shipped maps via this absolute path.
+    target_compile_definitions(drone_mapper_simulation_test
+        PRIVATE DRONE_MAPPER_DATA_DIR="${CMAKE_SOURCE_DIR}/data_maps")
     include(GoogleTest)
     gtest_discover_tests(drone_mapper_simulation_test)
 endif()
